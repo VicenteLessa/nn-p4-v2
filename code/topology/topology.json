@@ -1,0 +1,60 @@
+{
+  "hosts": {
+    "h1": {
+      "ip": "10.0.1.1/24",
+      "mac": "08:00:00:00:01:11",
+      "commands": [
+        "route add default gw 10.0.1.10 dev eth0",
+        "arp -i eth0 -s 10.0.1.10 08:00:00:00:01:00"
+      ]
+    },
+    "h2": {
+      "ip": "10.0.2.2/24",
+      "mac": "08:00:00:00:02:22",
+      "commands": [
+        "route add default gw 10.0.2.20 dev eth0",
+        "arp -i eth0 -s 10.0.2.20 08:00:00:00:02:00"
+      ]
+    }
+  },
+  "switches": {
+    "s1": {
+      "runtime_json": "topology/s1-runtime.json"
+    },
+    "s51": {
+      "runtime_json": "topology/s51-runtime.json"
+    },
+    "s101": {
+      "runtime_json": "topology/s101-runtime.json"
+    },
+    "s126": {
+      "runtime_json": "topology/s126-runtime.json"
+    }
+  },
+  "links": [
+    [
+      "h1",
+      "s1-p1"
+    ],
+    [
+      "s1-p51",
+      "s51-p1"
+    ],
+    [
+      "s51-p101",
+      "s101-p51"
+    ],
+    [
+      "s101-p126",
+      "s126-p101"
+    ],
+    [
+      "s102-p126",
+      "s126-p102"
+    ],
+    [
+      "s126-p2",
+      "h2"
+    ]
+  ]
+}
