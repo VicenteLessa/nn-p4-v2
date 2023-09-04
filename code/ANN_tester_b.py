@@ -21,11 +21,6 @@ cfg = {
             "name": "a",
             "iface": "s1-eth1",
             "id": "82"
-        },
-        {
-            "name": "b",
-            "iface": "s2-eth1",
-            "id": "83"
         }
     ],
     "outputs": [
@@ -33,18 +28,12 @@ cfg = {
             "name": "P4_class",
             "iface": "s126-eth2",
             "neuron_id": 126,
-            "proc": lambda x: x - 101,
+            "proc": lambda x: x,
         },
         {
             "name": "output_00",
             "iface": "s126-eth101",
             "neuron_id": 101,
-            "proc": lambda x: x/(2**PRECISION) if x < (2**(WORDSIZE - 1)) else (x-(2**WORDSIZE))/(2**PRECISION),
-        },
-        {
-            "name": "output_01",
-            "iface": "s126-eth102",
-            "neuron_id": 102,
             "proc": lambda x: x/(2**PRECISION) if x < (2**(WORDSIZE - 1)) else (x-(2**WORDSIZE))/(2**PRECISION),
         }
     ]
@@ -69,7 +58,7 @@ bind_layers(Ether, ANN, type=0x88B5)
 def main(cfg):
 
     # Read input dataset
-    input_dataset = pd.read_csv(cfg["input_dataset_filename"]).head(75)
+    input_dataset = pd.read_csv(cfg["input_dataset_filename"]).head(5)
 
     # Create shared queue and packet sniffer to receive ANN outputs
     packet_queue = queue.Queue()
@@ -88,10 +77,11 @@ def main(cfg):
     for tc_id, tc in input_dataset.iterrows():
         # Creat input packets
         input_pkts = []
+        
         for feat in cfg["features"]:
             input_pkts.append((
                 feat["iface"],
-                Ether(dst='ff:ff:ff:ff:ff:ff', src=get_if_hwaddr(feat["iface"])) / ANN(neuron_id=0, data_1=tc[feat["id"]], run_id=tc_id)
+                Ether(dst='ff:ff:ff:ff:ff:ff', src=get_if_hwaddr(feat["iface"])) / ANN(neuron_id=0, data_1=tc["82"], data_2=tc["83"], run_id=tc_id)
             ))
 
         # Send input packets as many times needed to receive all expected outputs
