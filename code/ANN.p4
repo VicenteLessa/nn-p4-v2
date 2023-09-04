@@ -51,8 +51,7 @@ struct metadata {
 
     bit<WORDSIZE> neuron_1_data;		//stores the data to be fowarded
     bit<WORDSIZE> neuron_2_data;
-    bit<WORDSIZE> neuron_1_max_value;
-    bit<WORDSIZE> neuron_2_max_value;
+    bit<WORDSIZE> neuron_max_value;
     bit<WORDSIZE> neuron_1_bias;
     bit<WORDSIZE> neuron_2_bias;
     bit<WORDSIZE> n2n_1_weight_1;
@@ -119,8 +118,7 @@ control MyIngress(inout headers hdr,
     register<bit<128>>(1) reg_received_stimuli;
     register<bit<WORDSIZE>>(1) reg_neuron_1_data;
     register<bit<WORDSIZE>>(1) reg_neuron_2_data;
-    register<bit<WORDSIZE>>(1) reg_neuron_1_max_value;
-    register<bit<WORDSIZE>>(1) reg_neuron_2_max_value;
+    register<bit<WORDSIZE>>(1) reg_neuron_max_value;
     register<bit<16>>(1) reg_run_id;
 
 	  action drop(){
@@ -291,22 +289,22 @@ control MyIngress(inout headers hdr,
                     // Example	-Corect: positive, no need for sign extension	w: 0001 -> dw: 0000 0001
                     //			-Corect: negative, with sign extension 			w: 1110 -> dw: 1111 1110
                     //			-WRONG:  negative, without sign extension 		w: 1110 -> dw: 0000 1110
-                    if((sum_result_dw_1 & (1 << (WORDSIZE-1))) > 0){                            // negative number
-                        sum_result_dw_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_dw_1;
+                    if((sum_result_1_dw & (1 << (WORDSIZE-1))) > 0){                            // negative number
+                        sum_result_1_dw = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_1_dw;
                     }
-                    if((sum_result_dw_2 & (1 << (WORDSIZE-1))) > 0){                            // negative number
-                        sum_result_dw_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_dw_2;
+                    if((sum_result_2_dw & (1 << (WORDSIZE-1))) > 0){                            // negative number
+                        sum_result_2_dw = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_2_dw;
                     }
-                    bit<D_WORDSIZE> operand_c1 = (bit<D_WORDSIZE>) neuron_1_std;
-                    bit<D_WORDSIZE> operand_c2 = (bit<D_WORDSIZE>) neuron_2_std;
+                    bit<D_WORDSIZE> operand_c1 = (bit<D_WORDSIZE>) meta.neuron_1_std;
+                    bit<D_WORDSIZE> operand_c2 = (bit<D_WORDSIZE>) meta.neuron_2_std;
                     if((operand_c1 & (1 << (WORDSIZE-1))) > 0){                                // negative number
                         operand_c1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_c1;
                     }
                     if((operand_c2 & (1 << (WORDSIZE-1))) > 0){                                // negative number
                         operand_c2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_c2;
                     }
-                    bit<D_WORDSIZE> norm_result_1 = ((sum_result_dw_1 * operand_c1) >> PRECISION);
-                    bit<D_WORDSIZE> norm_result_2 = ((sum_result_dw_2 * operand_c2) >> PRECISION);
+                    bit<D_WORDSIZE> norm_result_1 = ((sum_result_1_dw * operand_c1) >> PRECISION);
+                    bit<D_WORDSIZE> norm_result_2 = ((sum_result_2_dw * operand_c2) >> PRECISION);
                     meta.neuron_1_data = (bit<WORDSIZE>) norm_result_1;                           // store the value
                     meta.neuron_2_data = (bit<WORDSIZE>) norm_result_2;
                     reg_neuron_1_data.write(0, meta.neuron_1_data);
@@ -350,7 +348,6 @@ control MyIngress(inout headers hdr,
 					if((operand_a_2_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
                         operand_a_2_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_2;
                     }
-
 					if((operand_b1 & (1 << (WORDSIZE-1))) > 0){ // negative number
                         operand_b1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b1;
                     }
@@ -359,8 +356,8 @@ control MyIngress(inout headers hdr,
                     }
 
                     bit<D_WORDSIZE> res_1_1 = ((operand_a_1_1 * operand_b1) >> PRECISION);
-					bit<D_WORDSIZE> res_1_2 = ((operand_a_1_2 * operand_b1) >> PRECISION);
-					bit<D_WORDSIZE> res_2_1 = ((operand_a_2_1 * operand_b2) >> PRECISION);
+					bit<D_WORDSIZE> res_1_2 = ((operand_a_1_2 * operand_b2) >> PRECISION);
+					bit<D_WORDSIZE> res_2_1 = ((operand_a_2_1 * operand_b1) >> PRECISION);
 					bit<D_WORDSIZE> res_2_2 = ((operand_a_2_2 * operand_b2) >> PRECISION);
 
                     meta.neuron_1_data = meta.neuron_1_data + (bit<WORDSIZE>) res_1_1 + (bit<WORDSIZE>) res_1_2;
@@ -381,6 +378,10 @@ control MyIngress(inout headers hdr,
                     // the data to be fowarded (neuron_1_data) is the ID of the neuron with highest value.
 				    // neuron_2_data is the index of the neuron with highest value inside the same switch.
                     // the highest data (neuron_max_value) is kept to be compared by other neurons.
+                    bit<WORDSIZE> op_a = 0;
+                    bit<WORDSIZE> op_b = 0;
+                    bit<1> op_a_sig = 0;
+                    bit<1> op_b_sig = 0;
            	 	 	if(meta.n_received_stimuli == 1){
 						// if first stimuli then assume first data received is the higher, then check the remmaining data against it
 						meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
@@ -388,10 +389,10 @@ control MyIngress(inout headers hdr,
 						meta.neuron_max_value = hdr.ann.data_1;
 
 						// Check if data_2 is higher than data_1
-						bit<WORDSIZE> op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
-                        bit<WORDSIZE> op_b = meta.neuron_max_value;		// op_b is the store of max value until now
-                        bit<1> op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
-                        bit<1> op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+						op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
 						// There are two situation in which op_a is bigger then op_b
                         if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
                             //meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
@@ -408,34 +409,34 @@ control MyIngress(inout headers hdr,
                         reg_neuron_max_value.read(meta.neuron_max_value, 0);
 
 						//Run 1st for data_1
-                        bit<WORDSIZE> op_a = hdr.ann.data_1; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
-                        bit<WORDSIZE> op_b = meta.neuron_max_value;		// op_b is the store of max value until now
-                        bit<1> op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
-                        bit<1> op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+                        op_a = hdr.ann.data_1; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
 						// There are two situation in which op_a is higher then op_b
                         if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
                             meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-							meta.neuron_2_data = 0
+							meta.neuron_2_data = 0;
                             meta.neuron_max_value = hdr.ann.data_1;
                         } else if(op_a_sig == op_b_sig && op_a > op_b){ // The second: if the signal is the same, and op_a > op_b
                             meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-							meta.neuron_2_data = 0
+							meta.neuron_2_data = 0;
                             meta.neuron_max_value = hdr.ann.data_1;
                         }
 
 						//Run 2nd for data_2
-						bit<WORDSIZE> op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
-                        bit<WORDSIZE> op_b = meta.neuron_max_value;		// op_b is the store of max value until now
-                        bit<1> op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
-                        bit<1> op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+						op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
 						// There are two situation in which op_a is bigger then op_b
                         if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
                             meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-							meta.neuron_2_data = 1
+							meta.neuron_2_data = 1;
                             meta.neuron_max_value = hdr.ann.data_2;
                         } else if(op_a_sig == op_b_sig && op_a > op_b){ // The second: if the signal is the same, and op_a > op_b
                             meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-							meta.neuron_2_data = 1
+							meta.neuron_2_data = 1;
                             meta.neuron_max_value = hdr.ann.data_2;
                         }
            	 	 	}

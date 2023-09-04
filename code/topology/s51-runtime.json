@@ -83,7 +83,7 @@
         {
           "egress_port": 101,
           "instance": 1
-        },
+        }
       ]
     }
   ]

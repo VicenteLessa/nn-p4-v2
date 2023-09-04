@@ -82,6 +82,7 @@ def main(cfg):
             input_pkts.append((
                 feat["iface"],
                 Ether(dst='ff:ff:ff:ff:ff:ff', src=get_if_hwaddr(feat["iface"])) / ANN(neuron_id=0, data_1=tc["82"], data_2=tc["83"], run_id=tc_id)
+                #Ether(dst='ff:ff:ff:ff:ff:ff', src=get_if_hwaddr(feat["iface"])) / ANN(neuron_id=0, data_1=1143, data_2=1029, run_id=tc_id)
             ))
 
         # Send input packets as many times needed to receive all expected outputs
@@ -96,7 +97,7 @@ def main(cfg):
                 if not received_output:
                     # Send input packets
                     for iface, pkt in input_pkts:
-                        # print(f"||{iface}|| <<{pkt.show()}>>")
+                        print(f"||{iface}|| <<{pkt.show()}>>")
                         sendp(pkt, iface=iface, verbose=False)
 
                 while n_received_outputs < n_expected_outputs:
