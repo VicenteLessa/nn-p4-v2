@@ -35,7 +35,7 @@ header ann_t {
     bit<WORDSIZE> data_1;
     bit<WORDSIZE> data_2;
     bit<16> run_id;
-	  bit<SLACK> slack;
+	bit<SLACK> slack;
 }
 
 struct metadata {
@@ -47,13 +47,11 @@ struct metadata {
 
     bit<32> agg_func;
     bit<32> activation_func;
-
     bit<16> run_id;
 
-    bit<WORDSIZE> neuron_1_data;
+    bit<WORDSIZE> neuron_1_data;		//stores the data to be fowarded
     bit<WORDSIZE> neuron_2_data;
-    bit<WORDSIZE> neuron_1_argmax;
-    bit<WORDSIZE> neuron_2_argmax;
+    bit<WORDSIZE> neuron_max_value;
     bit<WORDSIZE> neuron_1_bias;
     bit<WORDSIZE> neuron_2_bias;
     bit<WORDSIZE> n2n_1_weight_1;
@@ -118,16 +116,29 @@ control MyIngress(inout headers hdr,
 
     register<bit<32>>(1) reg_n_received_stimuli;
     register<bit<128>>(1) reg_received_stimuli;
-    register<bit<WORDSIZE>>(1) reg_neuron_data;
-    register<bit<WORDSIZE>>(1) reg_neuron_argmax;
+    register<bit<WORDSIZE>>(1) reg_neuron_1_data;
+    register<bit<WORDSIZE>>(1) reg_neuron_2_data;
+    register<bit<WORDSIZE>>(1) reg_neuron_max_value;
     register<bit<16>>(1) reg_run_id;
 
-    action drop() {
+	  action drop(){
         mark_to_drop(standard_metadata);
     }
 
     action mcast(bit<16> mgroup){
         standard_metadata.mcast_grp = mgroup;
+    }
+
+    table ann_forward{
+        key = {
+            standard_metadata.ingress_port: exact;
+        }
+        actions = {
+            mcast;
+            drop;
+        }
+        size = 1024;
+        default_action = drop();
     }
 
     action set_neuron_id(bit<32> neuron_id){
@@ -205,9 +216,9 @@ control MyIngress(inout headers hdr,
 
     action set_norm_mean_std(bit<WORDSIZE> neuron_1_mean, bit<WORDSIZE> neuron_2_mean, bit<WORDSIZE> neuron_1_std, bit<WORDSIZE> neuron_2_std){
         meta.neuron_1_mean = neuron_1_mean;
-		    meta.neuron_2_mean = neuron_2_mean;
-		    meta.neuron_1_std = neuron_1_std;
-		    meta.neuron_2_std = neuron_2_std;
+		meta.neuron_2_mean = neuron_2_mean;
+  	    meta.neuron_1_std = neuron_1_std;
+		meta.neuron_2_std = neuron_2_std;
     }
 
     table tab_norm_mean_std{
@@ -228,19 +239,6 @@ control MyIngress(inout headers hdr,
         size = 1;
     }
 
-    table ann_forward{
-        key = {
-            standard_metadata.ingress_port: exact;
-        }
-        actions = {
-            mcast;
-            drop;
-        }
-        size = 1024;
-        default_action = drop();
-    }
-
-
     apply {
         if(hdr.ann.isValid()){                                   // If the ANN header is present in the packet
             reg_run_id.read(meta.run_id, 0);
@@ -258,125 +256,220 @@ control MyIngress(inout headers hdr,
             bit<128> received = meta.received_stimuli & ((bit<128>) 1 << (bit<8>) hdr.ann.neuron_id);
 
             // Check if the stimulus is expected and was not yet received
-            if((expected > (bit<128>) 0) && (received == (bit<128>) 0)) {
+            if((expected > (bit<128>) 0) && (received == (bit<128>) 0)){
                 meta.received_stimuli = meta.received_stimuli | ((bit<128>) 1 << (bit<8>) hdr.ann.neuron_id);
                 reg_received_stimuli.write(0, meta.received_stimuli);
-
+				// Load n_received_stimuli from register, increment it, and write back
                 reg_n_received_stimuli.read(meta.n_received_stimuli, 0);
                 meta.n_received_stimuli = meta.n_received_stimuli + 1;
                 reg_n_received_stimuli.write(0, meta.n_received_stimuli);
+				// Set the register(s) storing the neuron aggregation and bias function
+                tab_agg_func.apply();
+                tab_neuron_bias.apply();
 
-
-           	 	  tab_agg_func.apply();                                     // Set the register(s) storing the neuron aggregation function
-           	 	  tab_neuron_bias.apply();
-
-                if(meta.agg_func == FUNC_WEIGHTED_SUM) {
-           	 	 	    if(meta.n_received_stimuli == 1) {                    // Check if this is the first stimulus in an ANN run
-           	 	 	 	      meta.neuron_data = meta.neuron_bias;              // If yes, initialize neuron_data with the neuron bias
-           	 	 	    }
-                    else {
-           	 	 	 	      reg_neuron_data.read(meta.neuron_data, 0);        // If not, read the neuron_data value from the register
-           	 	 	    }
-           	 	 	    tab_n2n_weight.apply();                               // Get the neuron to neuron weight
-
-                    //meta.neuron_data = meta.neuron_data + meta.n2n_weight*hdr.ann.data;
-                    bit<D_WORDSIZE> operand_a = (bit<D_WORDSIZE>) meta.n2n_weight;
-                    bit<D_WORDSIZE> operand_b = (bit<D_WORDSIZE>) hdr.ann.data;
-                    if((operand_a & (1 << (WORDSIZE-1))) > 0){ // negative number
-                        operand_a = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a;
-                    }
-                    if((operand_b & (1 << (WORDSIZE-1))) > 0){ // negative number
-                        operand_b = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b;
-                    }
-
-                    bit<D_WORDSIZE> res = ((operand_a * operand_b) >> PRECISION);
-                    meta.neuron_data = meta.neuron_data + (bit<WORDSIZE>) res;
-           	 	 	    reg_neuron_data.write(0, meta.neuron_data);
-
-                }else if(meta.agg_func == FUNC_NORMALIZATION) {
+                //Calculate the aggregation funciton
+                if(meta.agg_func == FUNC_NORMALIZATION){
                     // normalized_value = (raw_value - weight) / sqrt(biases)
                     // since there's no subtraction nor division in P4, must adequate the formula to
                     // normalized_value = (raw_value + (-weight)) * (sqrt(bias)) ** -1
 
                     tab_norm_mean_std.apply(); // Load weight (mean) and bias (std)
 
-                    // Pass the values to registers to be able to operate them. To load the input data, which are integers, need to shift left to adequate them to FP notation Q.INT.FRAC.
-                    bit<WORDSIZE> operand_a = hdr.ann.data << PRECISION;                      // TO_DO need special treatment to NEGATIVES!!!
-                    bit<WORDSIZE> operand_b = meta.norm_mean;
-                    bit<WORDSIZE> sum_result = operand_a + operand_b;                         // compute the sum
-                    bit<D_WORDSIZE> sum_result_dw = (bit<D_WORDSIZE>) sum_result;             // need double to store the multiplication result
-                    if((sum_result_dw & (1 << (WORDSIZE-1))) > 0){                            // negative number
-                        sum_result_dw = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_dw;
-                    }
-                    bit<D_WORDSIZE> operand_c = (bit<D_WORDSIZE>) meta.norm_std;              // and then the multiplication
-                    if((operand_c & (1 << (WORDSIZE-1))) > 0){                                // negative number
-                        operand_c = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_c;
-                    }
-                    bit<D_WORDSIZE> norm_result = ((sum_result_dw * operand_c) >> PRECISION);
+                    // Pass the values to registers to be able to operate them.
+                    bit<WORDSIZE> operand_a1 = hdr.ann.data_1 << PRECISION;
+                    bit<WORDSIZE> operand_a2 = hdr.ann.data_2 << PRECISION;					//To load the input data, which are integers, need to shift left to adequate them to FP notation Q.INT.FRAC. TO_DO need special treatment to NEGATIVE INPUT DATA!!!
+                    bit<WORDSIZE> operand_b1 = meta.neuron_1_mean;
+                    bit<WORDSIZE> operand_b2 = meta.neuron_2_mean;
 
-                    meta.neuron_data = (bit<WORDSIZE>) norm_result;                           // store the value
-                    reg_neuron_data.write(0, meta.neuron_data);
-
+                    bit<WORDSIZE> sum_result_1 = operand_a1 + operand_b1;                         // compute the sum
+                    bit<WORDSIZE> sum_result_2 = operand_a2 + operand_b2;
+                    bit<D_WORDSIZE> sum_result_1_dw = (bit<D_WORDSIZE>) sum_result_1;             // need double to store the multiplication result
+                    bit<D_WORDSIZE> sum_result_2_dw = (bit<D_WORDSIZE>) sum_result_2;
+                    // When we extend the number of bits of a negative number, we must extend the signal to keep the correctness.
+                    // Example	-Corect: positive, no need for sign extension	w: 0001 -> dw: 0000 0001
+                    //			-Corect: negative, with sign extension 			w: 1110 -> dw: 1111 1110
+                    //			-WRONG:  negative, without sign extension 		w: 1110 -> dw: 0000 1110
+                    if((sum_result_1_dw & (1 << (WORDSIZE-1))) > 0){                            // negative number
+                        sum_result_1_dw = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_1_dw;
+                    }
+                    if((sum_result_2_dw & (1 << (WORDSIZE-1))) > 0){                            // negative number
+                        sum_result_2_dw = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) sum_result_2_dw;
+                    }
+                    bit<D_WORDSIZE> operand_c1 = (bit<D_WORDSIZE>) meta.neuron_1_std;
+                    bit<D_WORDSIZE> operand_c2 = (bit<D_WORDSIZE>) meta.neuron_2_std;
+                    if((operand_c1 & (1 << (WORDSIZE-1))) > 0){                                // negative number
+                        operand_c1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_c1;
+                    }
+                    if((operand_c2 & (1 << (WORDSIZE-1))) > 0){                                // negative number
+                        operand_c2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_c2;
+                    }
+                    bit<D_WORDSIZE> norm_result_1 = ((sum_result_1_dw * operand_c1) >> PRECISION);
+                    bit<D_WORDSIZE> norm_result_2 = ((sum_result_2_dw * operand_c2) >> PRECISION);
+                    meta.neuron_1_data = (bit<WORDSIZE>) norm_result_1;                           // store the value
+                    meta.neuron_2_data = (bit<WORDSIZE>) norm_result_2;
+                    reg_neuron_1_data.write(0, meta.neuron_1_data);
+                    reg_neuron_2_data.write(0, meta.neuron_2_data);
                 }
 
-                else if(meta.agg_func == FUNC_IDENTITY) {
-           	 	 	    meta.neuron_data = hdr.ann.data;
-           	 	 	    reg_neuron_data.write(0, meta.neuron_data);
-           	 	  }
-                
-                else if(meta.agg_func == FUNC_ARGMAX) {
-                // the data to be fowarded is the index of the neuron with highest value
-                // the highest data is kept to be compared by other neurons
-           	 	 	    if(meta.n_received_stimuli == 1) {
-           	 	 	 	      meta.neuron_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-           	 	 	 	      meta.neuron_argmax = hdr.ann.data;
-           	 	 	    }
-                    else {
-                        /* if(hdr.ann.data > meta.neuron_argmax) {
-           	 	 	 	 	        meta.neuron_data = hdr.ann.neuron_id;
-           	 	 	 	 	        meta.neuron_argmax = hdr.ann.data;
-           	 	 	 	      } */
+                else if(meta.agg_func == FUNC_WEIGHTED_SUM){
+					// Aggregation Function = bias + Summation_i=1_to_n(data_i * weight_i)
+           	 	 	if(meta.n_received_stimuli == 1){                   		// Check if this is the first stimulus in an ANN run
+						meta.neuron_1_data = meta.neuron_1_bias;            	// If yes, initialize neuron_data with the neuron bias, the neuron bias is added to the accumulator (neuron_data) just once
+						meta.neuron_2_data = meta.neuron_2_bias;
+           	 	 	}
+                    else{														// If not, read the neuron_data value stored in the register
+					    reg_neuron_1_data.read(meta.neuron_1_data, 0);
+						reg_neuron_2_data.read(meta.neuron_2_data, 0);
+           	 	 	}
 
-                        reg_neuron_data.read(meta.neuron_data, 0);
-                        reg_neuron_argmax.read(meta.neuron_argmax, 0);
+           	 	 	tab_n2n_weight.apply();										// Get the neuron to neuron weight
+                    //weighted sum: meta.neuron_data = meta.neuron_data + meta.n2n_weight*hdr.ann.data;
+                    bit<D_WORDSIZE> operand_a_1_1 = (bit<D_WORDSIZE>) meta.n2n_1_weight_1;
+					bit<D_WORDSIZE> operand_a_1_2 = (bit<D_WORDSIZE>) meta.n2n_1_weight_2;
+					bit<D_WORDSIZE> operand_a_2_1 = (bit<D_WORDSIZE>) meta.n2n_2_weight_1;
+					bit<D_WORDSIZE> operand_a_2_2 = (bit<D_WORDSIZE>) meta.n2n_2_weight_2;
 
-                        bit<WORDSIZE> op_a = hdr.ann.data;
-                        bit<WORDSIZE> op_b = meta.neuron_argmax;
+                    bit<D_WORDSIZE> operand_b1 = (bit<D_WORDSIZE>) hdr.ann.data_1;
+					bit<D_WORDSIZE> operand_b2 = (bit<D_WORDSIZE>) hdr.ann.data_2;
 
-                        bit<1> op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
-                        bit<1> op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
-                        if((op_a_sig == 0) && (op_b_sig  == 1)){
-                            meta.neuron_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-                            meta.neuron_argmax = hdr.ann.data;
-                        } else if(op_a_sig == op_b_sig && op_a > op_b){
-                            meta.neuron_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
-                            meta.neuron_argmax = hdr.ann.data;
+					// When we extend the number of bits of a negative number, we must extend the signal to keep the correctness.
+					// Example	-Corect: positive, no need for sign extension	w: 0001 -> dw: 0000 0001
+					//			-Corect: negative, with sign extension 			w: 1110 -> dw: 1111 1110
+					//			-WRONG:  negative, without sign extension 		w: 1110 -> dw: 0000 1110
+                    if((operand_a_1_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_a_1_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_1;
+					}
+					if((operand_a_1_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_a_1_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_2;
+                    }
+					if((operand_a_2_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_a_2_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_1;
+                    }
+					if((operand_a_2_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_a_2_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_2;
+                    }
+					if((operand_b1 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_b1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b1;
+                    }
+					if((operand_b2 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                        operand_b2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b2;
+                    }
+
+                    bit<D_WORDSIZE> res_1_1 = ((operand_a_1_1 * operand_b1) >> PRECISION);
+					bit<D_WORDSIZE> res_1_2 = ((operand_a_1_2 * operand_b2) >> PRECISION);
+					bit<D_WORDSIZE> res_2_1 = ((operand_a_2_1 * operand_b1) >> PRECISION);
+					bit<D_WORDSIZE> res_2_2 = ((operand_a_2_2 * operand_b2) >> PRECISION);
+
+                    meta.neuron_1_data = meta.neuron_1_data + (bit<WORDSIZE>) res_1_1 + (bit<WORDSIZE>) res_1_2;
+					meta.neuron_2_data = meta.neuron_2_data + (bit<WORDSIZE>) res_2_1 + (bit<WORDSIZE>) res_2_2;
+
+           	 	 	reg_neuron_1_data.write(0, meta.neuron_1_data);
+					reg_neuron_2_data.write(0, meta.neuron_2_data);
+                }
+
+                else if(meta.agg_func == FUNC_IDENTITY){
+                    meta.neuron_1_data = hdr.ann.data_1;
+                    meta.neuron_2_data = hdr.ann.data_2;
+                    reg_neuron_1_data.write(0, meta.neuron_1_data);
+                    reg_neuron_2_data.write(0, meta.neuron_2_data);
+				}
+
+                else if(meta.agg_func == FUNC_ARGMAX){
+                    // the data to be fowarded (neuron_1_data) is the ID of the neuron with highest value.
+				    // neuron_2_data is the index of the neuron with highest value inside the same switch.
+                    // the highest data (neuron_max_value) is kept to be compared by other neurons.
+                    bit<WORDSIZE> op_a = 0;
+                    bit<WORDSIZE> op_b = 0;
+                    bit<1> op_a_sig = 0;
+                    bit<1> op_b_sig = 0;
+           	 	 	if(meta.n_received_stimuli == 1){
+						// if first stimuli then assume first data received is the higher, then check the remmaining data against it
+						meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+						meta.neuron_2_data = 0; // neuron_2_data is the index of the neuron with highest value
+						meta.neuron_max_value = hdr.ann.data_1;
+
+						// Check if data_2 is higher than data_1
+						op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+						// There are two situation in which op_a is bigger then op_b
+                        if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
+                            //meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 1;
+                            meta.neuron_max_value = hdr.ann.data_2;
+                        } else if(op_a_sig == op_b_sig && op_a > op_b){ // The second: if the signal is the same, and op_a > op_b
+                            //meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 1;
+                            meta.neuron_max_value = hdr.ann.data_2;
                         }
-           	 	 	    }
-           	 	 	    reg_neuron_data.write(0, meta.neuron_data);
-           	 	 	    reg_neuron_argmax.write(0, meta.neuron_argmax);
-           	 	  }
+					}
+                    else{
+                        reg_neuron_1_data.read(meta.neuron_1_data, 0); //the index of the neuron with max_data
+                        reg_neuron_max_value.read(meta.neuron_max_value, 0);
+
+						//Run 1st for data_1
+                        op_a = hdr.ann.data_1; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+						// There are two situation in which op_a is higher then op_b
+                        if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
+                            meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 0;
+                            meta.neuron_max_value = hdr.ann.data_1;
+                        } else if(op_a_sig == op_b_sig && op_a > op_b){ // The second: if the signal is the same, and op_a > op_b
+                            meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 0;
+                            meta.neuron_max_value = hdr.ann.data_1;
+                        }
+
+						//Run 2nd for data_2
+						op_a = hdr.ann.data_2; 			// op_a is the data being evaluated if it's higher then the stored one (op_b)
+                        op_b = meta.neuron_max_value;		// op_b is the store of max value until now
+                        op_a_sig = (bit<1>)(op_a & (1 << (WORDSIZE-1)) > 0);
+                        op_b_sig = (bit<1>)(op_b & (1 << (WORDSIZE-1)) > 0);
+						// There are two situation in which op_a is bigger then op_b
+                        if((op_a_sig == 0) && (op_b_sig  == 1)){ // The first: if the op_a is positive and op_b is negative
+                            meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 1;
+                            meta.neuron_max_value = hdr.ann.data_2;
+                        } else if(op_a_sig == op_b_sig && op_a > op_b){ // The second: if the signal is the same, and op_a > op_b
+                            meta.neuron_1_data = (bit<WORDSIZE>) hdr.ann.neuron_id;
+							meta.neuron_2_data = 1;
+                            meta.neuron_max_value = hdr.ann.data_2;
+                        }
+           	 	 	}
+           	 	 	reg_neuron_1_data.write(0, meta.neuron_1_data);
+					reg_neuron_2_data.write(0, meta.neuron_2_data);
+           	 	 	reg_neuron_max_value.write(0, meta.neuron_max_value);
+				}
 
                 tab_n_expected_stimuli.apply();                             // Get the number of expected stimuli for the neuron
                 if(meta.n_received_stimuli == meta.n_expected_stimuli){     // Check if the number of expected stimuli was just reached,
                                                                             // If yes, the neuron_data is the final value, we should propagate it
                     tab_neuron_id.apply();                                  // Get the neuron ID
-                    if (meta.neuron_id > 0){
+                    if(meta.neuron_id > 0){
                         hdr.ann.neuron_id = meta.neuron_id;                 // Overwrite the fields in the ANN header
                     }
 
-             	 	 	  tab_activation_func.apply();                            // Get the neuron activation function
-             	 	 	  if(meta.activation_func == FUNC_RELU) {
-             	 	 	 	    if(meta.neuron_data & (1 << (WORDSIZE-1)) > 0){     // Relu: if negative, set data to 0
-             	 	 	 	 	      meta.neuron_data = 0;
-             	 	 	 	    }
-             	 	 	 	    hdr.ann.data = meta.neuron_data;                    // Overwrite the fields in the ANN header
-             	 	 	  }
-                    else if(meta.activation_func == FUNC_IDENTITY) {
-             	 	 	 	    hdr.ann.data = meta.neuron_data;                    // Overwrite the fields in the ANN header
-             	 	 	  }
+                    tab_activation_func.apply();                            // Get the neuron activation function
+                    if(meta.activation_func == FUNC_RELU){
+                        if(meta.neuron_1_data & (1 << (WORDSIZE-1)) > 0){     // Relu: if negative, set data to 0
+                            meta.neuron_1_data = 0;
+                        }
+                        if(meta.neuron_2_data & (1 << (WORDSIZE-1)) > 0){     // Relu: if negative, set data to 0
+                            meta.neuron_2_data = 0;
+                        }
+                        hdr.ann.data_1 = meta.neuron_1_data;                    // Overwrite the fields in the ANN header
+                        hdr.ann.data_2 = meta.neuron_2_data;
+                    }
+                    else if(meta.activation_func == FUNC_IDENTITY){
+                        hdr.ann.data_1 = meta.neuron_1_data;                    // Overwrite the fields in the ANN header
+                        hdr.ann.data_2 = meta.neuron_2_data;
+                    }
 
-                      reg_received_stimuli.write(0, 0);                     // Reset the registers related to received stimuli
+                    reg_received_stimuli.write(0, 0);                     // Reset the registers related to received stimuli
                     reg_n_received_stimuli.write(0, 0);
 
                     ann_forward.apply();                                    // Forward the packet according to the ANN forwarding logic
