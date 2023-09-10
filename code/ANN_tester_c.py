@@ -15,7 +15,7 @@ from scapy.all import *
 # Creating the config dict in loco, maybe best would be to be in a file
 cfg = {
     "input_dataset_filename": "csv_files_input/df_test_1_with_2_attributes.csv",
-    "output_csv_filename": "csv_files_output/p4_outputs_classifications_v2_iface_s126-eth101.csv",
+    "output_csv_filename": "csv_files_output/p4_out_v2.csv",
     "features": [
         {
             "name": "a",

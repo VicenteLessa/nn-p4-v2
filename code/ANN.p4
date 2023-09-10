@@ -313,37 +313,20 @@ apply {
 
             else if(meta.agg_func == FUNC_WEIGHTED_SUM){
                 // Aggregation Function = weighted sum = bias + Summation_i=1_to_n(data_i * weight_i)
-                if(meta.n_received_stimuli == 1){                   		// Check if this is the first stimulus in an ANN run
-                    meta.neuron_1_data = meta.neuron_1_bias;            	// If yes, initialize neuron_data with the neuron bias, the neuron bias is added to the accumulator (neuron_data) just once
+                if(meta.n_received_stimuli == 1){ // Check if this is the first stimulus in an ANN run
+                    meta.neuron_1_data = meta.neuron_1_bias; // If yes, initialize neuron_data with the neuron bias, the neuron bias is added to the accumulator (neuron_data) just once
                     meta.neuron_2_data = meta.neuron_2_bias;
                 }
-                else{														// If not, read the neuron_data value stored in the register
+                else{	// If not, read the neuron_data value stored in the register
                     reg_neuron_1_data.read(meta.neuron_1_data, 0);
                     reg_neuron_2_data.read(meta.neuron_2_data, 0);
                 }
 
-                tab_n2n_weight.apply();										// Get the neuron weights                
-                bit<D_WORDSIZE> operand_a_1_1 = (bit<D_WORDSIZE>) meta.n2n_1_weight_1; 
-                bit<D_WORDSIZE> operand_a_1_2 = (bit<D_WORDSIZE>) meta.n2n_1_weight_2;
-                bit<D_WORDSIZE> operand_a_2_1 = (bit<D_WORDSIZE>) meta.n2n_2_weight_1;
-                bit<D_WORDSIZE> operand_a_2_2 = (bit<D_WORDSIZE>) meta.n2n_2_weight_2;
+                tab_n2n_weight.apply();	// Get the neuron weights    
 
+                // Load data and perform sign extension
                 bit<D_WORDSIZE> operand_b1 = (bit<D_WORDSIZE>) hdr.ann.data_1;
                 bit<D_WORDSIZE> operand_b2 = (bit<D_WORDSIZE>) hdr.ann.data_2;
-
-                // SIGN EXTENSION:
-                if((operand_a_1_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
-                    operand_a_1_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_1;
-                }
-                if((operand_a_1_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
-                    operand_a_1_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_2;
-                }
-                if((operand_a_2_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
-                    operand_a_2_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_1;
-                }
-                if((operand_a_2_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
-                    operand_a_2_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_2;
-                }
                 if((operand_b1 & (1 << (WORDSIZE-1))) > 0){ // negative number
                     operand_b1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b1;
                 }
@@ -351,15 +334,38 @@ apply {
                     operand_b2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_b2;
                 }
 
+                // Neuron 1
+                bit<D_WORDSIZE> operand_a_1_1 = (bit<D_WORDSIZE>) meta.n2n_1_weight_1; // pass values to aux variable to be able to operate them
+                bit<D_WORDSIZE> operand_a_1_2 = (bit<D_WORDSIZE>) meta.n2n_1_weight_2;
+
+                if((operand_a_1_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                    operand_a_1_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_1;
+                }
+                if((operand_a_1_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                    operand_a_1_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_1_2;
+                }
+
                 bit<D_WORDSIZE> res_1_1 = ((operand_a_1_1 * operand_b1) >> PRECISION);
-                bit<D_WORDSIZE> res_1_2 = ((operand_a_1_2 * operand_b2) >> PRECISION);
+                bit<D_WORDSIZE> res_1_2 = ((operand_a_1_2 * operand_b2) >> PRECISION); 
+
+                meta.neuron_1_data = meta.neuron_1_data + (bit<WORDSIZE>) res_1_1 + (bit<WORDSIZE>) res_1_2; // Compute the summation
+                reg_neuron_1_data.write(0, meta.neuron_1_data); // Store data to be fowarded
+
+                // Neuron 2 
+                bit<D_WORDSIZE> operand_a_2_1 = (bit<D_WORDSIZE>) meta.n2n_2_weight_1;
+                bit<D_WORDSIZE> operand_a_2_2 = (bit<D_WORDSIZE>) meta.n2n_2_weight_2;
+                
+                if((operand_a_2_1 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                    operand_a_2_1 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_1;
+                }
+                if((operand_a_2_2 & (1 << (WORDSIZE-1))) > 0){ // negative number
+                    operand_a_2_2 = ((1 << D_WORDSIZE) - (1 << WORDSIZE)) + (bit<D_WORDSIZE>) operand_a_2_2;
+                }
+
                 bit<D_WORDSIZE> res_2_1 = ((operand_a_2_1 * operand_b1) >> PRECISION);
                 bit<D_WORDSIZE> res_2_2 = ((operand_a_2_2 * operand_b2) >> PRECISION);
 
-                meta.neuron_1_data = meta.neuron_1_data + (bit<WORDSIZE>) res_1_1 + (bit<WORDSIZE>) res_1_2;
                 meta.neuron_2_data = meta.neuron_2_data + (bit<WORDSIZE>) res_2_1 + (bit<WORDSIZE>) res_2_2;
-
-                reg_neuron_1_data.write(0, meta.neuron_1_data);
                 reg_neuron_2_data.write(0, meta.neuron_2_data);
             }
 

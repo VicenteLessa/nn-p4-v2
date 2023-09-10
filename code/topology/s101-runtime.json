@@ -60,8 +60,8 @@
       "action_name": "MyIngress.set_n2n_weight",
       "action_params": {
         "n2n_1_weight_1": 279621,
-        "n2n_1_weight_2": 4294684454,
-        "n2n_2_weight_1": 200020,
+        "n2n_1_weight_2": 200020,        
+        "n2n_2_weight_1": 4294684454,
         "n2n_2_weight_2": 4294790003
       }
     },
